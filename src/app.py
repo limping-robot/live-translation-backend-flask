@@ -66,7 +66,7 @@ def verify_token(token: str) -> Optional[str]:
         return None
 
 
-@app.post("/auth/login")
+@app.post("/login")
 def login():
     """Simple static-credential login: returns JWT if username/password match."""
     data = request.get_json(silent=True) or {}
