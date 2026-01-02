@@ -1,0 +1,7 @@
+flask
+flask-sock
+numpy
+faster-whisper
+torch
+transformers
+sentencepiece
