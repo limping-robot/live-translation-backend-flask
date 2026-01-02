@@ -1,7 +1,14 @@
 flask
 flask-sock
+PyJWT
+gunicorn
+gevent
+gevent-websocket
+simple-websocket
+
+torch
 numpy
 faster-whisper
-torch
 transformers
 sentencepiece
+sacremoses

@@ -1,13 +1,14 @@
 import json
 import os
+import datetime
 from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
 import torch
+import jwt
 
-from flask import Flask
-from flask import jsonify
+from flask import Flask, jsonify, request
 from flask_sock import Sock
 from faster_whisper import WhisperModel
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
@@ -16,7 +17,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 # ---------------- Config ----------------
 CUDA_AVAILABLE = torch.cuda.is_available()
 
-TRANSCRIPTION_MODEL_NAME = os.getenv("TRANSCRIPTION", "base")
+TRANSCRIPTION_MODEL_NAME = os.getenv("TRANSCRIPTION_MODEL_NAME", "base")
 TRANSCRIPTION_DEVICE = os.getenv("TRANSCRIPTION_DEVICE", "cuda" if CUDA_AVAILABLE else "cpu")
 TRANSCRIPTION_DATATYPE = "float32" if CUDA_AVAILABLE else "int8"
 
@@ -24,11 +25,64 @@ TRANSLATION_MODEL_NAME = os.getenv("TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-en
 TRANSLATION_DEVICE = os.getenv("ASR_DEVICE", "cuda" if CUDA_AVAILABLE else "cpu")
 
 TARGET_SR = 16000
+
+# Static credentials (change these or set via env)
+STATIC_USERNAME = os.getenv("APP_USERNAME", "percy")
+STATIC_PASSWORD = os.getenv("APP_PASSWORD", "p3nGu1n")
+
+# JWT config
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "sG0q8X2P9QeM4ZpO2u1vV4iC8wLh6RrQ_JsE7uQxT0A")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRES_HOURS = int(os.getenv("JWT_EXPIRES_HOURS", "12"))
 # --------------------------------------
 
 
 app = Flask(__name__)
 sock = Sock(app)
+
+def create_access_token(identity: str) -> str:
+    """Create a signed JWT for the given identity."""
+    now = datetime.datetime.utcnow()
+    payload = {
+        "sub": identity,
+        "iat": now,
+        "exp": now + datetime.timedelta(hours=JWT_EXPIRES_HOURS),
+    }
+    token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    # PyJWT>=2 returns a str already; if bytes, decode:
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+    return token
+
+
+def verify_token(token: str) -> Optional[str]:
+    """Return username from token if valid, else None."""
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        return payload.get("sub")
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+
+
+@app.post("/auth/login")
+def login():
+    """Simple static-credential login: returns JWT if username/password match."""
+    data = request.get_json(silent=True) or {}
+    username = data.get("username")
+    password = data.get("password")
+
+    print(f"Authenticating username={username}")
+
+    if username == STATIC_USERNAME and password == STATIC_PASSWORD:
+        token = create_access_token(username)
+        print(f"Successfully authenticated username={username}")
+        return jsonify({"access_token": token})
+
+    print(f"Failed authenticating username={username} password={password}")
+    return jsonify({"error": "Invalid credentials"}), 401
+
 
 @app.get("/health")
 def health():
@@ -42,21 +96,29 @@ def health():
         "TRANSLATION_DEVICE": TRANSLATION_DEVICE,
     })
 
-print(f"TRANSCRIPTION_MODEL_NAME={TRANSCRIPTION_MODEL_NAME}, " +
-        f"TRANSCRIPTION_DEVICE={TRANSCRIPTION_DEVICE}, " +
-        f"TRANSCRIPTION_DATATYPE={TRANSCRIPTION_DATATYPE}, " +
-        f"TRANSLATION_MODEL_NAME={TRANSLATION_MODEL_NAME}, " +
-        f"TRANSLATION_DEVICE={TRANSLATION_DEVICE}")
+
+print(
+    f"TRANSCRIPTION_MODEL_NAME={TRANSCRIPTION_MODEL_NAME}, "
+    f"TRANSCRIPTION_DEVICE={TRANSCRIPTION_DEVICE}, "
+    f"TRANSCRIPTION_DATATYPE={TRANSCRIPTION_DATATYPE}, "
+    f"TRANSLATION_MODEL_NAME={TRANSLATION_MODEL_NAME}, "
+    f"TRANSLATION_DEVICE={TRANSLATION_DEVICE}"
+)
 
 # Load models once (global)
-whisper_model = \
-    WhisperModel(TRANSCRIPTION_MODEL_NAME, device=TRANSCRIPTION_DEVICE, compute_type=TRANSCRIPTION_DATATYPE)
+whisper_model = WhisperModel(
+    TRANSCRIPTION_MODEL_NAME,
+    device=TRANSCRIPTION_DEVICE,
+    compute_type=TRANSCRIPTION_DATATYPE,
+)
 translation_tokenizer = AutoTokenizer.from_pretrained(TRANSLATION_MODEL_NAME)
 translation_model = AutoModelForSeq2SeqLM.from_pretrained(TRANSLATION_MODEL_NAME).to(TRANSLATION_DEVICE)
 translation_model.eval()
 
+
 def pcm16_bytes_to_float32(pcm_bytes: bytes) -> np.ndarray:
     return np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
 
 def resample_linear(x: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
     """Simple linear resampler. Good enough for speech prototyping."""
@@ -78,7 +140,12 @@ def translate_en_to_tl(text: str) -> str:
     text = text.strip()
     if not text:
         return ""
-    inputs = translation_tokenizer(text, return_tensors="pt", truncation=True, max_length=512).to(TRANSLATION_DEVICE)
+    inputs = translation_tokenizer(
+        text,
+        return_tensors="pt",
+        truncation=True,
+        max_length=512
+    ).to(TRANSLATION_DEVICE)
     out = translation_model.generate(**inputs, max_new_tokens=256, num_beams=4)
     return translation_tokenizer.decode(out[0], skip_special_tokens=True).strip()
 
@@ -92,6 +159,27 @@ class UtteranceBuffer:
 
 @sock.route("/ws")
 def ws_handler(ws):
+    """
+    WebSocket handler with JWT auth.
+
+    The client must connect as: ws://host/ws?token=JWT_HERE
+    """
+    # Get token from query string
+    token = request.args.get("token")
+    user = verify_token(token) if token else None
+
+    if not user:
+        # Minimal feedback then close
+        try:
+            ws.send(json.dumps({
+                "type": "error",
+                "message": "unauthorized",
+            }))
+        except Exception:
+            pass
+        ws.close()
+        return
+
     current: Optional[UtteranceBuffer] = None
 
     while True:
