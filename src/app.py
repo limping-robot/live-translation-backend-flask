@@ -145,7 +145,7 @@ def create_app(config=None):
         translation_model.eval()
     
     @app.post("/login")
-    def login():
+    def login():  # pyright: ignore[reportUnusedFunction]
         """Simple static-credential login: returns JWT if username/password match."""
         data = request.get_json(silent=True) or {}
         username = data.get("username")
@@ -162,7 +162,7 @@ def create_app(config=None):
         return jsonify({"error": "Invalid credentials"}), 401
 
     @app.get("/health")
-    def health():
+    def health():  # pyright: ignore[reportUnusedFunction]
         # Keep it cheap: confirm process is up and models are loaded.
         return jsonify({
             "ok": True,
@@ -174,7 +174,7 @@ def create_app(config=None):
         })
 
     @sock.route("/ws")
-    def ws_handler(ws):
+    def ws_handler(ws):  # pyright: ignore[reportUnusedFunction]
         """
         WebSocket handler with JWT auth.
 
