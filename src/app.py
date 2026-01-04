@@ -37,8 +37,11 @@ JWT_EXPIRES_HOURS = int(os.getenv("JWT_EXPIRES_HOURS", "12"))
 # --------------------------------------
 
 
-app = Flask(__name__)
-sock = Sock(app)
+# Module-level model storage (loaded once in create_app)
+whisper_model: Optional[WhisperModel] = None
+translation_tokenizer: Optional[AutoTokenizer] = None
+translation_model: Optional[AutoModelForSeq2SeqLM] = None
+
 
 def create_access_token(identity: str) -> str:
     """Create a signed JWT for the given identity."""
@@ -64,56 +67,6 @@ def verify_token(token: str) -> Optional[str]:
         return None
     except jwt.InvalidTokenError:
         return None
-
-
-@app.post("/login")
-def login():
-    """Simple static-credential login: returns JWT if username/password match."""
-    data = request.get_json(silent=True) or {}
-    username = data.get("username")
-    password = data.get("password")
-
-    print(f"Authenticating username={username}")
-
-    if username == STATIC_USERNAME and password == STATIC_PASSWORD:
-        token = create_access_token(username)
-        print(f"Successfully authenticated username={username}")
-        return jsonify({"access_token": token})
-
-    print(f"Failed authenticating username={username} password={password}")
-    return jsonify({"error": "Invalid credentials"}), 401
-
-
-@app.get("/health")
-def health():
-    # Keep it cheap: confirm process is up and models are loaded.
-    return jsonify({
-        "ok": True,
-        "TRANSCRIPTION_MODEL_NAME": TRANSCRIPTION_MODEL_NAME,
-        "TRANSCRIPTION_DEVICE": TRANSCRIPTION_DEVICE,
-        "TRANSCRIPTION_DATATYPE": TRANSCRIPTION_DATATYPE,
-        "TRANSLATION_MODEL_NAME": TRANSLATION_MODEL_NAME,
-        "TRANSLATION_DEVICE": TRANSLATION_DEVICE,
-    })
-
-
-print(
-    f"TRANSCRIPTION_MODEL_NAME={TRANSCRIPTION_MODEL_NAME}, "
-    f"TRANSCRIPTION_DEVICE={TRANSCRIPTION_DEVICE}, "
-    f"TRANSCRIPTION_DATATYPE={TRANSCRIPTION_DATATYPE}, "
-    f"TRANSLATION_MODEL_NAME={TRANSLATION_MODEL_NAME}, "
-    f"TRANSLATION_DEVICE={TRANSLATION_DEVICE}"
-)
-
-# Load models once (global)
-whisper_model = WhisperModel(
-    TRANSCRIPTION_MODEL_NAME,
-    device=TRANSCRIPTION_DEVICE,
-    compute_type=TRANSCRIPTION_DATATYPE,
-)
-translation_tokenizer = AutoTokenizer.from_pretrained(TRANSLATION_MODEL_NAME)
-translation_model = AutoModelForSeq2SeqLM.from_pretrained(TRANSLATION_MODEL_NAME).to(TRANSLATION_DEVICE)
-translation_model.eval()
 
 
 def pcm16_bytes_to_float32(pcm_bytes: bytes) -> np.ndarray:
@@ -157,85 +110,154 @@ class UtteranceBuffer:
     buf: bytearray
 
 
-@sock.route("/ws")
-def ws_handler(ws):
+def create_app(config=None):
     """
-    WebSocket handler with JWT auth.
-
-    The client must connect as: ws://host/ws?token=JWT_HERE
+    Application factory function.
+    
+    Args:
+        config: Optional configuration object (for future use)
+    
+    Returns:
+        Flask application instance
     """
-    # Get token from query string
-    token = request.args.get("token")
-    user = verify_token(token) if token else None
+    global whisper_model, translation_tokenizer, translation_model
+    
+    app = Flask(__name__)
+    sock = Sock(app)
+    
+    # Load models once (only on first factory call)
+    if whisper_model is None:
+        print(
+            f"Loading models: TRANSCRIPTION_MODEL_NAME={TRANSCRIPTION_MODEL_NAME}, "
+            f"TRANSCRIPTION_DEVICE={TRANSCRIPTION_DEVICE}, "
+            f"TRANSCRIPTION_DATATYPE={TRANSCRIPTION_DATATYPE}, "
+            f"TRANSLATION_MODEL_NAME={TRANSLATION_MODEL_NAME}, "
+            f"TRANSLATION_DEVICE={TRANSLATION_DEVICE}"
+        )
+        
+        whisper_model = WhisperModel(
+            TRANSCRIPTION_MODEL_NAME,
+            device=TRANSCRIPTION_DEVICE,
+            compute_type=TRANSCRIPTION_DATATYPE,
+        )
+        translation_tokenizer = AutoTokenizer.from_pretrained(TRANSLATION_MODEL_NAME)
+        translation_model = AutoModelForSeq2SeqLM.from_pretrained(TRANSLATION_MODEL_NAME).to(TRANSLATION_DEVICE)
+        translation_model.eval()
+    
+    @app.post("/login")
+    def login():
+        """Simple static-credential login: returns JWT if username/password match."""
+        data = request.get_json(silent=True) or {}
+        username = data.get("username")
+        password = data.get("password")
 
-    if not user:
-        # Minimal feedback then close
-        try:
-            ws.send(json.dumps({
-                "type": "error",
-                "message": "unauthorized",
-            }))
-        except Exception:
-            pass
-        ws.close()
-        return
+        print(f"Authenticating username={username}")
 
-    current: Optional[UtteranceBuffer] = None
+        if username == STATIC_USERNAME and password == STATIC_PASSWORD:
+            token = create_access_token(username)
+            print(f"Successfully authenticated username={username}")
+            return jsonify({"access_token": token})
 
-    while True:
-        msg = ws.receive()
-        if msg is None:
-            break
+        print(f"Failed authenticating username={username} password={password}")
+        return jsonify({"error": "Invalid credentials"}), 401
 
-        # JSON control messages
-        if isinstance(msg, str):
-            obj = json.loads(msg)
-            t = obj.get("type")
+    @app.get("/health")
+    def health():
+        # Keep it cheap: confirm process is up and models are loaded.
+        return jsonify({
+            "ok": True,
+            "TRANSCRIPTION_MODEL_NAME": TRANSCRIPTION_MODEL_NAME,
+            "TRANSCRIPTION_DEVICE": TRANSCRIPTION_DEVICE,
+            "TRANSCRIPTION_DATATYPE": TRANSCRIPTION_DATATYPE,
+            "TRANSLATION_MODEL_NAME": TRANSLATION_MODEL_NAME,
+            "TRANSLATION_DEVICE": TRANSLATION_DEVICE,
+        })
 
-            if t == "utt_start":
-                current = UtteranceBuffer(
-                    utt_id=obj["uttId"],
-                    sample_rate=int(obj["sampleRate"]),
-                    buf=bytearray(),
-                )
+    @sock.route("/ws")
+    def ws_handler(ws):
+        """
+        WebSocket handler with JWT auth.
 
-            elif t == "utt_end":
-                if current is None or obj.get("uttId") != current.utt_id:
-                    continue
+        The client must connect as: ws://host/ws?token=JWT_HERE
+        """
+        # Get token from query string
+        token = request.args.get("token")
+        user = verify_token(token) if token else None
 
-                pcm_bytes = bytes(current.buf)
-                utt_id = current.utt_id
-                src_sr = current.sample_rate
-                current = None
-
-                audio = pcm16_bytes_to_float32(pcm_bytes)
-
-                # Resample to 16k for consistency
-                if src_sr != TARGET_SR:
-                    audio = resample_linear(audio, src_sr, TARGET_SR)
-
-                segments, info = whisper_model.transcribe(
-                    audio,
-                    language="en",   # expected English speech input
-                    beam_size=5,
-                )
-                en = "".join(s.text for s in segments).strip()
-                tl = translate_en_to_tl(en) if en else ""
-
+        if not user:
+            # Minimal feedback then close
+            try:
                 ws.send(json.dumps({
-                    "type": "result",
-                    "uttId": utt_id,
-                    "en": en,
-                    "tl": tl,
+                    "type": "error",
+                    "message": "unauthorized",
                 }))
+            except Exception:
+                pass
+            ws.close()
+            return
 
-            elif t == "ping":
-                ws.send(json.dumps({"type": "pong"}))
+        current: Optional[UtteranceBuffer] = None
 
-        # Binary PCM chunk
-        else:
-            if current is not None:
-                current.buf.extend(msg)
+        while True:
+            msg = ws.receive()
+            if msg is None:
+                break
+
+            # JSON control messages
+            if isinstance(msg, str):
+                obj = json.loads(msg)
+                t = obj.get("type")
+
+                if t == "utt_start":
+                    current = UtteranceBuffer(
+                        utt_id=obj["uttId"],
+                        sample_rate=int(obj["sampleRate"]),
+                        buf=bytearray(),
+                    )
+
+                elif t == "utt_end":
+                    if current is None or obj.get("uttId") != current.utt_id:
+                        continue
+
+                    pcm_bytes = bytes(current.buf)
+                    utt_id = current.utt_id
+                    src_sr = current.sample_rate
+                    current = None
+
+                    audio = pcm16_bytes_to_float32(pcm_bytes)
+
+                    # Resample to 16k for consistency
+                    if src_sr != TARGET_SR:
+                        audio = resample_linear(audio, src_sr, TARGET_SR)
+
+                    segments, info = whisper_model.transcribe(
+                        audio,
+                        language="en",   # expected English speech input
+                        beam_size=5,
+                    )
+                    en = "".join(s.text for s in segments).strip()
+                    tl = translate_en_to_tl(en) if en else ""
+
+                    ws.send(json.dumps({
+                        "type": "result",
+                        "uttId": utt_id,
+                        "en": en,
+                        "tl": tl,
+                    }))
+
+                elif t == "ping":
+                    ws.send(json.dumps({"type": "pong"}))
+
+            # Binary PCM chunk
+            else:
+                if current is not None:
+                    current.buf.extend(msg)
+    
+    return app
+
+
+# Create app instance for gunicorn/WSGI servers
+app = create_app()
 
 
 if __name__ == "__main__":
