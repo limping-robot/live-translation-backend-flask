@@ -21,7 +21,7 @@ TRANSCRIPTION_MODEL_NAME = os.getenv("TRANSCRIPTION_MODEL_NAME", "base")
 TRANSCRIPTION_DEVICE = os.getenv("TRANSCRIPTION_DEVICE", "cuda" if CUDA_AVAILABLE else "cpu")
 TRANSCRIPTION_DATATYPE = "float32" if CUDA_AVAILABLE else "int8"
 
-TRANSLATION_MODEL_NAME = os.getenv("TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-en-tl")
+TRANSLATION_MODEL_NAME = os.getenv("TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-tl-en")
 TRANSLATION_DEVICE = os.getenv("ASR_DEVICE", "cuda" if CUDA_AVAILABLE else "cpu")
 
 TARGET_SR = 16000
@@ -89,7 +89,7 @@ def resample_linear(x: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
 
 
 @torch.no_grad()
-def translate_en_to_tl(text: str) -> str:
+def translate_tl_to_en(text: str) -> str:
     text = text.strip()
     if not text:
         return ""
@@ -232,11 +232,11 @@ def create_app(config=None):
 
                     segments, info = whisper_model.transcribe(
                         audio,
-                        language="en",   # expected English speech input
+                        language="tl",   # expected Tagalog speech input
                         beam_size=5,
                     )
-                    en = "".join(s.text for s in segments).strip()
-                    tl = translate_en_to_tl(en) if en else ""
+                    tl = "".join(s.text for s in segments).strip()
+                    en = translate_tl_to_en(tl) if tl else ""
 
                     ws.send(json.dumps({
                         "type": "result",
