@@ -1,5 +1,7 @@
 import json
 import os
+import sys
+import time
 import datetime
 from dataclasses import dataclass
 from typing import Optional
@@ -43,9 +45,25 @@ translation_tokenizer: Optional[AutoTokenizer] = None
 translation_model: Optional[AutoModelForSeq2SeqLM] = None
 
 
+def log_json(message: dict, use_stderr: bool = False):
+    """
+    Write a structured JSON log message to stdout (default) or stderr (for errors).
+    
+    Args:
+        message: Dictionary to be logged as JSON
+        use_stderr: If True, write to stderr; otherwise write to stdout
+    """
+    output = sys.stderr if use_stderr else sys.stdout
+    log_entry = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z'),
+        **message
+    }
+    print(json.dumps(log_entry), file=output, flush=True)
+
+
 def create_access_token(identity: str) -> str:
     """Create a signed JWT for the given identity."""
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc)
     payload = {
         "sub": identity,
         "iat": now,
@@ -196,6 +214,13 @@ def create_app(config=None):
             ws.close()
             return
 
+        # Log new session
+        log_json({
+            "event": "session_start",
+            "user": user,
+            "remote_addr": request.remote_addr,
+        })
+
         current: Optional[UtteranceBuffer] = None
 
         while True:
@@ -230,13 +255,65 @@ def create_app(config=None):
                     if src_sr != TARGET_SR:
                         audio = resample_linear(audio, src_sr, TARGET_SR)
 
-                    segments, info = whisper_model.transcribe(
-                        audio,
-                        language="tl",   # expected Tagalog speech input
-                        beam_size=5,
-                    )
-                    tl = "".join(s.text for s in segments).strip()
-                    en = translate_tl_to_en(tl) if tl else ""
+                    # Calculate audio length in seconds
+                    audio_length_seconds = len(audio) / TARGET_SR
+
+                    # Log incoming audio
+                    log_json({
+                        "event": "audio_received",
+                        "utt_id": utt_id,
+                        "audio_length_seconds": round(audio_length_seconds, 3),
+                        "sample_rate": src_sr,
+                    })
+
+                    # Measure transcription time
+                    transcription_start = time.time()
+                    try:
+                        segments, info = whisper_model.transcribe(
+                            audio,
+                            language="tl",   # expected Tagalog speech input
+                            beam_size=5,
+                        )
+                        tl = "".join(s.text for s in segments).strip()
+                        transcription_time_ms = round((time.time() - transcription_start) * 1000)
+
+                        # Log transcription time
+                        log_json({
+                            "event": "transcription_complete",
+                            "utt_id": utt_id,
+                            "transcription_time_ms": transcription_time_ms,
+                        })
+                    except Exception as e:
+                        transcription_time_ms = round((time.time() - transcription_start) * 1000)
+                        log_json({
+                            "event": "transcription_error",
+                            "utt_id": utt_id,
+                            "transcription_time_ms": transcription_time_ms,
+                            "error": str(e),
+                        }, use_stderr=True)
+                        tl = ""
+
+                    # Measure translation time
+                    translation_start = time.time()
+                    try:
+                        en = translate_tl_to_en(tl) if tl else ""
+                        translation_time_ms = round((time.time() - translation_start) * 1000, 2)
+
+                        # Log translation time
+                        log_json({
+                            "event": "translation_complete",
+                            "utt_id": utt_id,
+                            "translation_time_ms": translation_time_ms,
+                        })
+                    except Exception as e:
+                        translation_time_ms = round((time.time() - translation_start) * 1000, 2)
+                        log_json({
+                            "event": "translation_error",
+                            "utt_id": utt_id,
+                            "translation_time_ms": translation_time_ms,
+                            "error": str(e),
+                        }, use_stderr=True)
+                        en = ""
 
                     ws.send(json.dumps({
                         "type": "result",

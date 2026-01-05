@@ -19,7 +19,8 @@ COPY src/ .
 # Environment defaults for local testing (override in docker-compose if needed)
 ENV TRANSCRIPTION_DEVICE=gpu \
     TRANSCRIPTION_MODEL_NAME=base \
-    LD_LIBRARY_PATH="/usr/local/lib/python3.11/site-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH}"
+    LD_LIBRARY_PATH="/usr/local/lib/python3.11/site-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH}" \
+    PYTHONUNBUFFERED=1
 
 # Expose Flask/gunicorn port
 EXPOSE 5000
