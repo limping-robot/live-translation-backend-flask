@@ -23,7 +23,7 @@ TRANSCRIPTION_MODEL_NAME = os.getenv("TRANSCRIPTION_MODEL_NAME", "base")
 TRANSCRIPTION_DEVICE = os.getenv("TRANSCRIPTION_DEVICE", "cuda" if CUDA_AVAILABLE else "cpu")
 TRANSCRIPTION_DATATYPE = "float32" if CUDA_AVAILABLE else "int8"
 
-TRANSLATION_MODEL_NAME = os.getenv("TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-tl-en")
+TRANSLATION_MODEL_NAME = os.getenv("TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-de-en")
 TRANSLATION_DEVICE = os.getenv("ASR_DEVICE", "cuda" if CUDA_AVAILABLE else "cpu")
 
 TARGET_SR = 16000
@@ -271,10 +271,10 @@ def create_app(config=None):
                     try:
                         segments, info = whisper_model.transcribe(
                             audio,
-                            language="tl",   # expected Tagalog speech input
+                            language="de",   # expected German speech input
                             beam_size=5,
                         )
-                        tl = "".join(s.text for s in segments).strip()
+                        source = "".join(s.text for s in segments).strip()
                         transcription_time_ms = round((time.time() - transcription_start) * 1000)
 
                         # Log transcription time
@@ -291,12 +291,12 @@ def create_app(config=None):
                             "transcription_time_ms": transcription_time_ms,
                             "error": str(e),
                         }, use_stderr=True)
-                        tl = ""
+                        source = ""
 
                     # Measure translation time
                     translation_start = time.time()
                     try:
-                        en = translate_tl_to_en(tl) if tl else ""
+                        target = translate_tl_to_en(source) if source else ""
                         translation_time_ms = round((time.time() - translation_start) * 1000, 2)
 
                         # Log translation time
@@ -313,13 +313,13 @@ def create_app(config=None):
                             "translation_time_ms": translation_time_ms,
                             "error": str(e),
                         }, use_stderr=True)
-                        en = ""
+                        target = ""
 
                     ws.send(json.dumps({
                         "type": "result",
                         "uttId": utt_id,
-                        "en": en,
-                        "tl": tl,
+                        "source": source,
+                        "target": target,
                     }))
 
                 elif t == "ping":
