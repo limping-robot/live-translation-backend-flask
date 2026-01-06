@@ -19,12 +19,12 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 # ---------------- Config ----------------
 CUDA_AVAILABLE = torch.cuda.is_available()
 
-TRANSCRIPTION_MODEL_NAME = os.getenv("TRANSCRIPTION_MODEL_NAME", "medium")
+TRANSCRIPTION_MODEL_NAME = os.getenv("TRANSCRIPTION_MODEL_NAME", "models/hmh-whisper-tl-small-v3-ct2")
 TRANSCRIPTION_DEVICE = os.getenv("TRANSCRIPTION_DEVICE", "cuda" if CUDA_AVAILABLE else "cpu")
-TRANSCRIPTION_DATATYPE = "float32" if CUDA_AVAILABLE else "int8"
+TRANSCRIPTION_DATATYPE = "int8" if TRANSCRIPTION_DEVICE else "float32"
 
-TRANSLATION_MODEL_NAME = os.getenv("TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-de-en")
-TRANSLATION_DEVICE = os.getenv("ASR_DEVICE", "cuda" if CUDA_AVAILABLE else "cpu")
+TRANSLATION_MODEL_NAME = os.getenv("TRANSLATION_MODEL", "Helsinki-NLP/opus-mt-tl-en")
+TRANSLATION_DEVICE = os.getenv("TRANSLATION_DEVICE", "cuda" if CUDA_AVAILABLE else "cpu")
 
 TARGET_SR = 16000
 
@@ -271,8 +271,8 @@ def create_app(config=None):
                     try:
                         segments, info = whisper_model.transcribe(
                             audio,
-                            language="de",   # expected German speech input
-                            beam_size=5,
+                            language="tl",   # expected Tagalog speech input
+                            beam_size=5
                         )
                         source = "".join(s.text for s in segments).strip()
                         transcription_time_ms = round((time.time() - transcription_start) * 1000)
