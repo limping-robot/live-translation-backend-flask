@@ -19,7 +19,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 # ---------------- Config ----------------
 CUDA_AVAILABLE = torch.cuda.is_available()
 
-TRANSCRIPTION_MODEL_NAME = os.getenv("TRANSCRIPTION_MODEL_NAME", "base")
+TRANSCRIPTION_MODEL_NAME = os.getenv("TRANSCRIPTION_MODEL_NAME", "medium")
 TRANSCRIPTION_DEVICE = os.getenv("TRANSCRIPTION_DEVICE", "cuda" if CUDA_AVAILABLE else "cpu")
 TRANSCRIPTION_DATATYPE = "float32" if CUDA_AVAILABLE else "int8"
 
