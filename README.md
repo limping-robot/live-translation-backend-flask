@@ -1,5 +1,5 @@
 ## Overview
-A Flask backend for real-time speech transcription and translation. It transcribes English speech and translates it to Tagalog (Filipino).
+A Flask backend for real-time speech transcription and translation. It transcribes Tagalog (Filipino) speech and translates it to English.
 
 ## Features
 
@@ -15,11 +15,11 @@ A Flask backend for real-time speech transcription and translation. It transcrib
 
 3. Speech transcription
    - Uses `faster-whisper` (Whisper model)
-   - Expects English input
+   - Expects Tagalog input
    - Model configurable via env vars (defaults to "base")
 
 4. Translation
-   - Translates English → Tagalog using Helsinki-NLP's `opus-mt-en-tl`
+   - Translates Tagalog → English using a custom Whisper model converted for Faster Whisper (ctranslate2)
    - Runs on GPU if available, otherwise CPU
 
 5. Health check
@@ -35,4 +35,4 @@ A Flask backend for real-time speech transcription and translation. It transcrib
 1. Client logs in → receives JWT
 2. Client connects to `/ws?token=JWT`
 3. Client sends `utt_start` → streams PCM16 audio → sends `utt_end`
-4. Server transcribes → translates → sends back English text + Tagalog translation
+4. Server transcribes → translates → sends back Tagalog text + English translation
